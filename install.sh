@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Psiphon Multi-Region Installer v3.0
-# Ubuntu 24.04 | psiphon-tunnel-core + Xray (x-ui/3x-ui)
+# Psiphon Multi-Region Auto-Installer v4.5 (Full System Update First)
 # =============================================================================
 set -Eeuo pipefail
 
@@ -10,9 +9,9 @@ PSIPHON_INSTANCES="${PSIPHON_INSTANCES:-20}"
 PSIPHON_USER="psiphon"
 PSIPHON_DIR="/opt/psiphon"
 PSIPHON_BIN="$PSIPHON_DIR/psiphon-tunnel-core"
-SOCKS_BASE_PORT=10800          # instance N → port 10800+N  (10801–10820)
-SOCKS_LISTEN_IP="127.20.0.1"   # loopback alias (avoids clash with 127.0.0.1)
-INBOUND_BASE_PORT=20000        # instance N → port 20000+N  (20001-20020)
+SOCKS_BASE_PORT=10800          # Instance N -> Port 10800+N (10801–10820)
+SOCKS_LISTEN_IP="127.20.0.1"   # Dedicated Loopback IP
+INBOUND_BASE_PORT=20000        # Instance N -> Port 20000+N (20001–20020)
 XRAY_TAG_IN_PREFIX="psiphon-in-"
 XRAY_TAG_OUT_PREFIX="psiphon-out-"
 LOG_DIR="/var/log/psiphon"
@@ -25,73 +24,115 @@ ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 die()  { echo -e "${RED}[✗]${NC} $*"; exit 1; }
 
-# ── Root check ────────────────────────────────────────────────────────────────
-[[ $EUID -eq 0 ]] || die "Run as root."
+[[ $EUID -eq 0 ]] || die "This script must be run as root."
 
-# ── Loopback alias (127.20.0.1) ───────────────────────────────────────────────
+# ── Step 1: Update & Upgrade Entire System First ──────────────────────────────
+update_and_install_deps() {
+    log "Step 1/8: Updating package indices & upgrading entire system packages..."
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Refresh repositories
+    apt-get update -qq -y || warn "apt-get update showed minor warnings, continuing..."
+
+    # Full system upgrade
+    log "Performing full system upgrade (dist-upgrade)..."
+    apt-get dist-upgrade -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" || \
+        apt-get upgrade -y -qq || warn "Some packages could not be upgraded, proceeding..."
+
+    log "Installing mandatory system dependencies..."
+    local PKGS=(
+        curl
+        wget
+        jq
+        python3
+        python3-pip
+        ca-certificates
+        iproute2
+        net-tools
+        tar
+        gzip
+        unzip
+        systemd
+    )
+
+    apt-get install -y -qq "${PKGS[@]}" || die "Failed to install required system packages."
+    ok "Entire system updated & all dependencies installed successfully."
+}
+
+# ── Step 2: Setup Loopback IP Alias ───────────────────────────────────────────
 setup_loopback_alias() {
-    if ! ip addr show lo | grep -q "$SOCKS_LISTEN_IP"; then
-        log "Adding loopback alias $SOCKS_LISTEN_IP"
-        ip addr add "$SOCKS_LISTEN_IP/8" dev lo 2>/dev/null || true
-        
-        # Persist across reboots
-        cat > /etc/systemd/network/10-lo-alias.network <<EOF
-[Match]
-Name=lo
+    log "Step 2/8: Configuring persistent loopback IP alias ($SOCKS_LISTEN_IP)..."
+    
+    # Assign immediately
+    ip addr add "$SOCKS_LISTEN_IP/32" dev lo 2>/dev/null || true
 
-[Network]
-Address=$SOCKS_LISTEN_IP/8
+    # Systemd persistence service
+    cat > /etc/systemd/system/psiphon-ip-alias.service <<EOF
+[Unit]
+Description=Psiphon Loopback IP Alias Setup
+Before=network.target psiphon@.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ip addr add $SOCKS_LISTEN_IP/32 dev lo
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
 EOF
-        systemctl restart systemd-networkd 2>/dev/null || true
+
+    systemctl daemon-reload
+    systemctl enable --now psiphon-ip-alias.service 2>/dev/null || true
+
+    if ip addr show lo | grep -q "$SOCKS_LISTEN_IP"; then
+        ok "Loopback IP alias $SOCKS_LISTEN_IP is active and configured."
+    else
+        die "Failed to assign loopback alias $SOCKS_LISTEN_IP"
     fi
 }
 
-# ── Install dependencies ──────────────────────────────────────────────────────
-install_deps() {
-    log "Installing dependencies..."
-    apt-get update -qq
-    apt-get install -y -qq curl jq python3 ca-certificates iproute2 || \
-        die "apt-get failed"
-    ok "Dependencies ready"
-}
-
-# ── Create system user ────────────────────────────────────────────────────────
+# ── Step 3: Create Dedicated System User ──────────────────────────────────────
 create_user() {
+    log "Step 3/8: Checking system user..."
     if ! id "$PSIPHON_USER" &>/dev/null; then
-        log "Creating system user: $PSIPHON_USER"
         useradd --system --no-create-home --shell /usr/sbin/nologin "$PSIPHON_USER"
+        ok "User $PSIPHON_USER created."
+    else
+        ok "User $PSIPHON_USER already exists."
     fi
 }
 
-# ── Download psiphon-tunnel-core ──────────────────────────────────────────────
+# ── Step 4: Download Core Binary ──────────────────────────────────────────────
 download_psiphon() {
+    log "Step 4/8: Checking Psiphon Core executable..."
     mkdir -p "$PSIPHON_DIR" "$LOG_DIR" "$BACKUP_DIR"
 
     if [[ -x "$PSIPHON_BIN" ]]; then
-        warn "psiphon-tunnel-core already exists — skipping download"
+        ok "Psiphon binary already present."
         return
     fi
 
-    log "Downloading binary directly from Psiphon-Labs repository..."
-    
-    # Direct binary URL from official Psiphon-Labs binaries repository
-    BINARY_URL="https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64"
+    log "Downloading Psiphon Core binary..."
+    local BINARY_URL="https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64"
 
-    curl -fsSL -o "$PSIPHON_BIN" "$BINARY_URL" || die "Download failed"
+    if ! curl -fsSL -o "$PSIPHON_BIN" "$BINARY_URL"; then
+        wget -q -O "$PSIPHON_BIN" "$BINARY_URL" || die "Failed to download Psiphon binary."
+    fi
+
     chmod 755 "$PSIPHON_BIN"
-    
-    ok "psiphon-tunnel-core installed: $PSIPHON_BIN"
+    ok "Psiphon Core installed successfully."
 }
 
-# ── Generate per-instance config ──────────────────────────────────────────────
-generate_config() {
-    local n="$1"
-    local socks_port=$(( SOCKS_BASE_PORT + n ))
-    local cfg="$PSIPHON_DIR/config-${n}.json"
+# ── Step 5: Generate Configurations ───────────────────────────────────────────
+generate_configs() {
+    log "Step 5/8: Generating configuration files for $PSIPHON_INSTANCES instances..."
+    for n in $(seq 1 "$PSIPHON_INSTANCES"); do
+        local socks_port=$(( SOCKS_BASE_PORT + n ))
+        local cfg="$PSIPHON_DIR/config-${n}.json"
 
-    [[ -f "$cfg" ]] && return  # idempotent
-
-    python3 - <<PYEOF
+        if [[ ! -f "$cfg" ]]; then
+            python3 - <<PYEOF
 import json
 config = {
     "PropagationChannelId":       "FFFFFFFFFFFFFFFF",
@@ -109,16 +150,20 @@ config = {
 with open("${cfg}", "w") as f:
     json.dump(config, f, indent=2)
 PYEOF
-    mkdir -p "$PSIPHON_DIR/data-${n}"
-    ok "Config generated: $cfg"
+            mkdir -p "$PSIPHON_DIR/data-${n}"
+        fi
+    done
+    ok "Instance configs generated."
 }
 
-# ── Systemd unit (template) ───────────────────────────────────────────────────
-install_systemd_template() {
+# ── Step 6: Systemd Template Setup ───────────────────────────────────────────
+setup_systemd() {
+    log "Step 6/8: Setting up Systemd service templates..."
     cat > /etc/systemd/system/psiphon@.service <<EOF
 [Unit]
 Description=Psiphon Tunnel Instance %i
-After=network-online.target
+Requires=psiphon-ip-alias.service
+After=network-online.target psiphon-ip-alias.service
 Wants=network-online.target
 StartLimitIntervalSec=60
 StartLimitBurst=5
@@ -129,36 +174,36 @@ User=${PSIPHON_USER}
 Group=${PSIPHON_USER}
 ExecStart=${PSIPHON_BIN} -config ${PSIPHON_DIR}/config-%i.json
 Restart=on-failure
-RestartSec=5s
+RestartSec=3s
 StandardOutput=append:${LOG_DIR}/psiphon-%i.log
 StandardError=append:${LOG_DIR}/psiphon-%i.log
 
-# Hardening
+# Security Hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=${PSIPHON_DIR} ${LOG_DIR}
-AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    ok "Systemd template installed: psiphon@.service"
+    ok "Systemd template updated."
 }
 
-# ── Enable & start instances ──────────────────────────────────────────────────
+# ── Step 7: Start Services ────────────────────────────────────────────────────
 start_instances() {
+    log "Step 7/8: Launching $PSIPHON_INSTANCES Psiphon instances..."
     for n in $(seq 1 "$PSIPHON_INSTANCES"); do
-        generate_config "$n"
         systemctl enable --now "psiphon@${n}.service" 2>/dev/null || \
             systemctl restart "psiphon@${n}.service" 2>/dev/null || true
     done
-    sleep 2  # allow brief startup
+    sleep 3
+    ok "All instances started."
 }
 
-# ── Find Xray config ──────────────────────────────────────────────────────────
+# ── Step 8: Inject Xray Configuration ─────────────────────────────────────────
 find_xray_config() {
     local candidates=(
         "/etc/x-ui/xray.json"
@@ -170,24 +215,23 @@ find_xray_config() {
     for c in "${candidates[@]}"; do
         [[ -f "$c" ]] && { echo "$c"; return; }
     done
-    # Dynamic search
     find /etc /opt /usr/local -maxdepth 5 -name "config.json" 2>/dev/null \
         | xargs grep -l '"inbounds"' 2>/dev/null \
         | head -1 || true
 }
 
-# ── Inject Xray inbounds + routing (Python3, no jq dependency) ───────────────
-inject_xray_config() {
+inject_xray() {
+    log "Step 8/8: Injecting routes into Xray/Panel configuration..."
     local XRAY_CFG
     XRAY_CFG=$(find_xray_config)
 
-    [[ -n "$XRAY_CFG" ]] || { warn "Xray config not found. Skipping injection."; return; }
+    [[ -z "$XRAY_CFG" ]] && { warn "Xray config not found, skipping injection."; return; }
 
-    log "Modifying Xray config: $XRAY_CFG"
+    log "Updating Xray config: $XRAY_CFG"
     cp "$XRAY_CFG" "${BACKUP_DIR}/xray_config_backup.json"
 
     python3 - <<PYEOF
-import json, sys
+import json, uuid
 
 cfg_path = "${XRAY_CFG}"
 n_instances = ${PSIPHON_INSTANCES}
@@ -219,75 +263,46 @@ for n in range(1, n_instances + 1):
     in_port  = inbound_base + n
     s_port   = socks_base + n
 
-    # ── Inbound (VLESS) ──────────────────────────────────────────────────
     if tag_in not in existing_in_tags and in_port not in existing_in_ports:
-        import uuid
-        inbound = {
-            "tag":      tag_in,
-            "listen":   "0.0.0.0",
-            "port":     in_port,
-            "protocol": "vless",
-            "settings": {
-                "clients": [{"id": str(uuid.uuid4()), "flow": ""}],
-                "decryption": "none"
-            },
-            "streamSettings": {
-                "network": "tcp",
-                "tcpSettings": {"header": {"type": "none"}}
-            },
+        cfg["inbounds"].append({
+            "tag": tag_in, "listen": "0.0.0.0", "port": in_port, "protocol": "vless",
+            "settings": {"clients": [{"id": str(uuid.uuid4()), "flow": ""}], "decryption": "none"},
+            "streamSettings": {"network": "tcp", "tcpSettings": {"header": {"type": "none"}}},
             "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}
-        }
-        cfg["inbounds"].append(inbound)
+        })
 
-    # ── Outbound (SOCKS5 → Psiphon) ──────────────────────────────────────
     if tag_out not in existing_out_tags:
-        outbound = {
-            "tag":      tag_out,
-            "protocol": "socks",
-            "settings": {
-                "servers": [{
-                    "address": socks_ip,
-                    "port":    s_port
-                }]
-            }
-        }
-        cfg["outbounds"].append(outbound)
+        cfg["outbounds"].append({
+            "tag": tag_out, "protocol": "socks",
+            "settings": {"servers": [{"address": socks_ip, "port": s_port}]}
+        })
 
-    # ── Routing rule: inbound N → outbound SOCKS N ───────────────────────
     if tag_in not in routing_tags:
-        rule = {
-            "type":        "field",
-            "inboundTag":  [tag_in],
-            "outboundTag": tag_out
-        }
-        cfg["routing"]["rules"].append(rule)
+        cfg["routing"]["rules"].append({
+            "type": "field", "inboundTag": [tag_in], "outboundTag": tag_out
+        })
 
 with open(cfg_path, "w") as f:
     json.dump(cfg, f, indent=2)
-
-print(f"[ok] Xray config updated: {n_instances} inbound/outbound pairs injected.")
 PYEOF
 
-    ok "Xray config updated: $XRAY_CFG"
-
-    # Restart x-ui / xray service
-    for svc in x-ui 3x-ui xray; do
+    ok "Xray configuration updated."
+    for svc in 3x-ui x-ui xray; do
         if systemctl is-active --quiet "$svc" 2>/dev/null; then
-            log "Restarting $svc..."
-            systemctl restart "$svc" && ok "$svc restarted"
+            systemctl restart "$svc" && ok "$svc restarted."
             break
         fi
     done
 }
 
-# ── Fix permissions ───────────────────────────────────────────────────────────
+# ── Fix Permissions ───────────────────────────────────────────────────────────
 fix_permissions() {
     chown -R "$PSIPHON_USER":"$PSIPHON_USER" "$PSIPHON_DIR" "$LOG_DIR"
     chmod 750 "$PSIPHON_DIR"
     chmod 640 "$PSIPHON_DIR"/config-*.json 2>/dev/null || true
 }
 
-# ── Summary table ─────────────────────────────────────────────────────────────
+# ── Print Summary ─────────────────────────────────────────────────────────────
 print_summary() {
     echo
     echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
@@ -303,30 +318,22 @@ print_summary() {
     done
     echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
     echo
-    echo -e "  Logs   : ${YELLOW}tail -f $LOG_DIR/psiphon-N.log${NC}"
-    echo -e "  Restart: ${YELLOW}systemctl restart psiphon@N.service${NC}"
-    echo
 }
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 main() {
-    log "=== Psiphon Multi-Region Install v3.0 ==="
-    log "Instances: $PSIPHON_INSTANCES"
-    log "Inbound ports : $(( INBOUND_BASE_PORT + 1 ))–$(( INBOUND_BASE_PORT + PSIPHON_INSTANCES ))"
-    log "SOCKS5 ports  : $(( SOCKS_BASE_PORT + 1 ))–$(( SOCKS_BASE_PORT + PSIPHON_INSTANCES ))"
-    echo
-
-    install_deps
-    create_user
+    log "=== Psiphon Multi-Region Auto-Installer v4.5 ==="
+    update_and_install_deps
     setup_loopback_alias
+    create_user
     download_psiphon
-    install_systemd_template
+    generate_configs
+    setup_systemd
     start_instances
     fix_permissions
-    inject_xray_config
+    inject_xray
     print_summary
-
-    ok "Installation complete."
+    ok "Full installation completed successfully!"
 }
 
 main "$@"
