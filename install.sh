@@ -74,22 +74,25 @@ download_psiphon() {
     fi
 
     log "Fetching latest psiphon-tunnel-core release..."
-    LATEST_URL=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
-        | python3 -c "
+    
+    RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null) || true
+    
+    LATEST_URL=$(echo "$RELEASE_JSON" | python3 -c "
 import sys, json
-data = json.load(sys.stdin)
-assets = data.get('assets', [])
-for a in assets:
-    if 'linux' in a['name'].lower() and 'amd64' in a['name'].lower() and a['name'].endswith('.tar.gz'):
-        print(a['browser_download_url'])
-        break
+try:
+    data = json.load(sys.stdin)
+    for a in data.get('assets', []):
+        url = a.get('browser_download_url', '')
+        if 'linux' in url.lower() and 'amd64' in url.lower():
+            print(url)
+            break
+except Exception:
+    pass
 " 2>/dev/null) || true
 
-    # Fallback: try direct URL pattern
+    # Direct fallback URL if GitHub API fails
     if [[ -z "$LATEST_URL" ]]; then
-        LATEST_TAG=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)
-        LATEST_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_TAG}/psiphon-tunnel-core_${LATEST_TAG#v}_linux_amd64.tar.gz"
+        LATEST_URL="https://github.com/Psiphon-Labs/psiphon-tunnel-core/releases/download/v2.0.41/psiphon-tunnel-core_linux_amd64.tar.gz"
     fi
 
     log "Downloading: $LATEST_URL"
@@ -98,7 +101,7 @@ for a in assets:
 
     curl -fsSL -o "$TMP_DIR/psi.tar.gz" "$LATEST_URL" || die "Download failed"
     tar -xzf "$TMP_DIR/psi.tar.gz" -C "$TMP_DIR"
-    BIN_FILE=$(find "$TMP_DIR" -name "psiphon-tunnel-core" -type f | head -1)
+    BIN_FILE=$(find "$TMP_DIR" -name "psiphon-tunnel-core*" -type f | head -1)
     [[ -n "$BIN_FILE" ]] || die "Binary not found in archive"
     install -m 755 "$BIN_FILE" "$PSIPHON_BIN"
     ok "psiphon-tunnel-core installed: $PSIPHON_BIN"
