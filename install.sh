@@ -15,7 +15,6 @@ SOCKS_LISTEN_IP="127.20.0.1"   # loopback alias (avoids clash with 127.0.0.1)
 INBOUND_BASE_PORT=20000        # instance N → port 20000+N  (20001-20020)
 XRAY_TAG_IN_PREFIX="psiphon-in-"
 XRAY_TAG_OUT_PREFIX="psiphon-out-"
-GITHUB_REPO="Psiphon-Labs/psiphon-tunnel-core"
 LOG_DIR="/var/log/psiphon"
 BACKUP_DIR="$PSIPHON_DIR/backups"
 
@@ -51,7 +50,7 @@ EOF
 install_deps() {
     log "Installing dependencies..."
     apt-get update -qq
-    apt-get install -y -qq curl jq python3 ca-certificates unzip iproute2 || \
+    apt-get install -y -qq curl jq python3 ca-certificates iproute2 || \
         die "apt-get failed"
     ok "Dependencies ready"
 }
@@ -73,37 +72,14 @@ download_psiphon() {
         return
     fi
 
-    log "Fetching latest psiphon-tunnel-core release..."
+    log "Downloading binary directly from Psiphon-Labs repository..."
     
-    RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null) || true
+    # Direct binary URL from official Psiphon-Labs binaries repository
+    BINARY_URL="https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64"
+
+    curl -fsSL -o "$PSIPHON_BIN" "$BINARY_URL" || die "Download failed"
+    chmod 755 "$PSIPHON_BIN"
     
-    LATEST_URL=$(echo "$RELEASE_JSON" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for a in data.get('assets', []):
-        url = a.get('browser_download_url', '')
-        if 'linux' in url.lower() and 'amd64' in url.lower():
-            print(url)
-            break
-except Exception:
-    pass
-" 2>/dev/null) || true
-
-    # Valid Fallback URLs if Github API fails or gets rate-limited
-    if [[ -z "$LATEST_URL" ]]; then
-        LATEST_URL="https://github.com/Psiphon-Labs/psiphon-tunnel-core/releases/download/2.0.41/psiphon-tunnel-core_2.0.41_linux_amd64.tar.gz"
-    fi
-
-    log "Downloading: $LATEST_URL"
-    TMP_DIR=$(mktemp -d)
-    trap 'rm -rf "$TMP_DIR"' EXIT
-
-    curl -fsSL -o "$TMP_DIR/psi.tar.gz" "$LATEST_URL" || die "Download failed"
-    tar -xzf "$TMP_DIR/psi.tar.gz" -C "$TMP_DIR"
-    BIN_FILE=$(find "$TMP_DIR" -name "psiphon-tunnel-core*" -type f | head -1)
-    [[ -n "$BIN_FILE" ]] || die "Binary not found in archive"
-    install -m 755 "$BIN_FILE" "$PSIPHON_BIN"
     ok "psiphon-tunnel-core installed: $PSIPHON_BIN"
 }
 
