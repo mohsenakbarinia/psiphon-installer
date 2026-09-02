@@ -5,18 +5,6 @@
 # =============================================================================
 set -Eeuo pipefail
 
-# ── Re-exec safely (detach from SSH session) ─────────────────────────────────
-if [[ -z "${PSIPHON_DETACHED:-}" ]]; then
-    LOG_DIR="/var/log/psiphon"
-    mkdir -p "$LOG_DIR"
-    LOGFILE="$LOG_DIR/install.log"
-    export PSIPHON_DETACHED=1
-    echo "[*] Re-launching in detached mode. Follow: tail -f $LOGFILE"
-    nohup setsid bash "$0" "$@" >"$LOGFILE" 2>&1 &
-    disown
-    exit 0
-fi
-
 # ── Config ────────────────────────────────────────────────────────────────────
 PSIPHON_INSTANCES="${PSIPHON_INSTANCES:-20}"
 PSIPHON_USER="psiphon"
@@ -209,58 +197,37 @@ find_xray_config() {
         | head -1 || true
 }
 
-# ── Inject Xray inbounds + routingDIR}/psiphon-%i.log
-
-# Hardening
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-ReadWritePaths=${PSIPHON_DIR} ${LOG_DIR}
-AmbientCapabilities=
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    ok "Systemd template installed: psiphon@.service"
-}
-
-# ── Enable & start instances ──────────────────────────────────────────────────
-start_instances() {
-    for n in $(seq 1 "$PSIPHON_INSTANCES"); do
-        generate_config "$n"
-        systemctl enable --now "psiphon@${n}.service" 2>/dev/null || \
-            systemctl restart "psiphon@${n}.service" 2>/dev/null || true
-    done
-    sleep 2  # allow brief startup
-}
-
-# ── Find Xray config ──────────────────────────────────────────────────────────
-find_xray_config() {
-    local candidates=(
-        "/etc/x-ui/xray.json"
-        "/usr/local/x-ui/bin/config.json"
-        "/etc/xray/config.json"
-        "/usr/local/etc/xray/config.json"
-        "/opt/xray/config.json"
-    )
-    for c in "${candidates[@]}"; do
-        [[ -f "$c" ]] && { echo "$c"; return; }
-    done
-    # Dynamic search
-    find /etc /opt /usr/local -maxdepth 5 -name "config.json" 2>/dev/null \
-        | xargs grep -l '"inbounds"' 2>/dev/null \
-        | head -1 || true
-}
-
 # ── Inject Xray inbounds + routing (Python3, no jq dependency) ───────────────
 inject_xray_config() {
     local XRAY_CFG
     XRAY_CFG=$(find_xray_config)
 
-    ifport") for ib in cfg["inbounds"]}
-existing_out_ports= set()  # SOCKS outbounds use address+port
+    [[ -n "$XRAY_CFG" ]] || { warn "Xray config not found. Skipping injection."; return; }
+
+    log "Modifying Xray config: $XRAY_CFG"
+    cp "$XRAY_CFG" "${BACKUP_DIR}/xray_config_backup.json"
+
+    python3 - <<PYEOF
+import json, sys
+
+cfg_path = "${XRAY_CFG}"
+n_instances = ${PSIPHON_INSTANCES}
+tag_in_pfx = "${XRAY_TAG_IN_PREFIX}"
+tag_out_pfx = "${XRAY_TAG_OUT_PREFIX}"
+socks_base = ${SOCKS_BASE_PORT}
+inbound_base = ${INBOUND_BASE_PORT}
+socks_ip = "${SOCKS_LISTEN_IP}"
+
+with open(cfg_path, "r") as f:
+    cfg = json.load(f)
+
+cfg.setdefault("inbounds", [])
+cfg.setdefault("outbounds", [])
+cfg.setdefault("routing", {}).setdefault("rules", [])
+
+existing_in_tags = {ib.get("tag") for ib in cfg["inbounds"]}
+existing_out_tags = {ob.get("tag") for ob in cfg["outbounds"]}
+existing_in_ports = {ib.get("port") for ib in cfg["inbounds"]}
 
 routing_tags = {
     r.get("inboundTag", [None])[0] if isinstance(r.get("inboundTag"), list) else r.get("inboundTag")
@@ -358,7 +325,6 @@ print_summary() {
     echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
     echo
     echo -e "  Logs   : ${YELLOW}tail -f $LOG_DIR/psiphon-N.log${NC}"
-    echo -e "  Install: ${YELLOW}tail -f $LOG_DIR/install.log${NC}"
     echo -e "  Restart: ${YELLOW}systemctl restart psiphon@N.service${NC}"
     echo
 }
