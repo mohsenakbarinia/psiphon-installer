@@ -90,9 +90,9 @@ except Exception:
     pass
 " 2>/dev/null) || true
 
-    # Direct fallback URL if GitHub API fails
+    # Valid Fallback URLs if Github API fails or gets rate-limited
     if [[ -z "$LATEST_URL" ]]; then
-        LATEST_URL="https://github.com/Psiphon-Labs/psiphon-tunnel-core/releases/download/v2.0.41/psiphon-tunnel-core_linux_amd64.tar.gz"
+        LATEST_URL="https://github.com/Psiphon-Labs/psiphon-tunnel-core/releases/download/2.0.41/psiphon-tunnel-core_2.0.41_linux_amd64.tar.gz"
     fi
 
     log "Downloading: $LATEST_URL"
