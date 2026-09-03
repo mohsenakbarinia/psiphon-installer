@@ -6,13 +6,11 @@
 
 set -Eeuo pipefail
 
-readonly VERSION="6.0"
+readonly VERSION="6.1"
 readonly INSTALL_DIR="/opt/psiphon-panel"
 readonly PSIPHON_USER="psiphon"
 readonly INSTANCE_COUNT=20
-readonly BASE_LOOPBACK="127.20.0"
 readonly SOCKS_BASE_PORT=10800
-readonly WEB_PORT=8000
 readonly LOG_FILE="/var/log/psiphon-installer.log"
 
 # Colors
@@ -27,15 +25,8 @@ log() { echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')] [INFO]${NC} $*" | tee -a
 warn() { echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] [WARN]${NC} $*" | tee -a "$LOG_FILE"; }
 err() { echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR]${NC} $*" | tee -a "$LOG_FILE"; }
 
-# 1. Environment & Architecture Check
 if [ "$EUID" -ne 0 ]; then
     err "این اسکریپت حتما باید با دسترسی root اجرا شود."
-    exit 1
-fi
-
-ARCH=$(uname -m)
-if [ "$ARCH" != "x86_64" ]; then
-    err "معماری سرور شما ($ARCH) است؛ در حال حاضر فقط x86_64 پشتیبانی می‌شود."
     exit 1
 fi
 
@@ -46,37 +37,34 @@ echo -e "${CYAN}    https://github.com/mohsenakbarinia/psiphon-installer       $
 echo -e "${CYAN}==============================================================${NC}"
 sleep 1
 
-# 2. Package Installation
+# 1. Package Installation
 log "نصب پکیج‌های پیش‌نیاز سیستم..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl wget jq socat nginx-light certbot python3 python3-pip python3-venv ufw fail2ban
 
-# 3. Directories & User Setup
+# 2. Directories & User Setup
 log "آماده‌سازی دایرکتوری‌ها و کاربر سیستمی..."
 id -u "$PSIPHON_USER" &>/dev/null || useradd -r -s /bin/false -d "$INSTALL_DIR" "$PSIPHON_USER"
 
 mkdir -p "$INSTALL_DIR"/{bin,config,data,logs,web,web/templates}
 mkdir -p "$INSTALL_DIR/data/instances"
 
-# 4. Psiphon Core Binary Setup
-if [ ! -f "$INSTALL_DIR/bin/psiphon-tunnel-core" ]; then
-    if [ -f "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" ]; then
-        log "انتقال باینری موجود از مسیر قبلی..."
-        cp "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" "$INSTALL_DIR/bin/psiphon-tunnel-core"
-    else
-        log "دانلود هسته psiphon-tunnel-core..."
-        # دانلود نسخه پایدار از منبع رسمی یا ریپازیتوری
-        wget -qO "$INSTALL_DIR/bin/psiphon-tunnel-core.tar.gz" "https://github.com/Psiphon-Labs/psiphon-tunnel-core/releases/download/v20230620/psiphon-tunnel-core-linux-x86_64.tar.gz" 2>/dev/null || true
-        if [ -f "$INSTALL_DIR/bin/psiphon-tunnel-core.tar.gz" ]; then
-            tar -xzf "$INSTALL_DIR/bin/psiphon-tunnel-core.tar.gz" -C "$INSTALL_DIR/bin/"
-            rm -f "$INSTALL_DIR/bin/psiphon-tunnel-core.tar.gz"
-        fi
-    fi
+# 3. Psiphon Core Binary Setup (بررسی هوشمند باینری)
+log "بررسی و دانلود فایل اجرایی psiphon-tunnel-core..."
+if [ -f "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" ]; then
+    log "استفاده از باینری موجود در سرور..."
+    cp -f "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" "$INSTALL_DIR/bin/psiphon-tunnel-core"
+elif [ -f "/usr/local/bin/psiphon-tunnel-core" ]; then
+    cp -f "/usr/local/bin/psiphon-tunnel-core" "$INSTALL_DIR/bin/psiphon-tunnel-core"
+else
+    log "دانلود مستقیم باینری رسمی سایفون..."
+    curl -fsSL "https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64" -o "$INSTALL_DIR/bin/psiphon-tunnel-core"
 fi
-chmod +x "$INSTALL_DIR/bin/psiphon-tunnel-core" 2>/dev/null || true
 
-# 5. Configuration Generation for Instances
+chmod +x "$INSTALL_DIR/bin/psiphon-tunnel-core"
+
+# 4. Configuration Generation
 log "تولید فایل‌های کانفیگ برای ${INSTANCE_COUNT} اینستنس..."
 for i in $(seq 1 $INSTANCE_COUNT); do
     cat << EOF > "$INSTALL_DIR/config/psi-$i.conf"
@@ -90,9 +78,9 @@ for i in $(seq 1 $INSTANCE_COUNT); do
 EOF
     mkdir -p "$INSTALL_DIR/data/instances/psi-$i"
 done
-chown -R "$PSIPHON_USER":"$PSIPHON_USER" "$INSTALL_DIR/data" "$INSTALL_DIR/config"
+chown -R "$PSIPHON_USER":"$PSIPHON_USER" "$INSTALL_DIR"
 
-# 6. Systemd Unit for Psiphon Instances
+# 5. Systemd Service Template for Psiphon Instances
 cat << EOF > /etc/systemd/system/psiphon@.service
 [Unit]
 Description=Psiphon Core Instance %i
@@ -112,13 +100,12 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-# 7. Python Web Panel Backend (FastAPI + WebSocket Logs)
-log "راه‌اندازی محیط پایتون و پنل وب مدیریتی..."
+# 6. Python Web Panel Backend
+log "راه‌اندازی محیط پایتون و پنل وب..."
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q
 "$INSTALL_DIR/venv/bin/pip" install fastapi uvicorn[standard] jinja2 requests psutil websockets -q
 
-# ایجاد بک‌اند کامل پایتون
 cat << 'PYEOF' > "$INSTALL_DIR/web/app.py"
 import os
 import json
@@ -136,7 +123,6 @@ templates = Jinja2Templates(directory=f"{BASE_DIR}/web/templates")
 
 def get_instance_status(idx: int):
     socks_port = 10800 + idx - 1
-    # بررسی فعال بودن سرویس در لینوکس
     active = subprocess.run(["systemctl", "is-active", f"psiphon@{idx}"], capture_output=True, text=True).stdout.strip() == "active"
     ip = "-"
     country = "-"
@@ -170,8 +156,6 @@ async def instance_action(idx: int, action: str = Form(...)):
 async def setup_domain(domain: str = Form(...)):
     if not domain:
         return JSONResponse({"status": "error", "message": "دامنه نباید خالی باشد."}, status_code=400)
-    
-    # اجرا اسکریپت تنظیم SSL و Nginx
     cmd = f"/usr/local/bin/psi-panel-ssl {domain}"
     proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if proc.returncode == 0:
@@ -181,7 +165,6 @@ async def setup_domain(domain: str = Form(...)):
 @app.websocket("/ws/logs/{service_name}")
 async def stream_logs(websocket: WebSocket, service_name: str):
     await websocket.accept()
-    # استفاده از journalctl به عنوان stream لاگ زنده
     proc = await asyncio.create_subprocess_exec(
         "journalctl", "-u", service_name, "-f", "-n", "30",
         stdout=asyncio.subprocess.PIPE,
@@ -199,7 +182,7 @@ async def stream_logs(websocket: WebSocket, service_name: str):
         proc.kill()
 PYEOF
 
-# ایجاد قالب وب داشبورد کامل (HTML/CSS مدرن و تاریک با پنل لاگ زنده)
+# ساخت فایل HTML داشبورد
 cat << 'HTMLEOF' > "$INSTALL_DIR/web/templates/dashboard.html"
 <!DOCTYPE html>
 <html dir="rtl" lang="fa">
@@ -228,7 +211,6 @@ cat << 'HTMLEOF' > "$INSTALL_DIR/web/templates/dashboard.html"
     </nav>
 
     <div class="container-fluid px-4">
-        <!-- بخش تنظیمات دامنه و لاگ کل -->
         <div class="row mb-4">
             <div class="col-md-5 mb-3">
                 <div class="card p-3">
@@ -255,7 +237,6 @@ cat << 'HTMLEOF' > "$INSTALL_DIR/web/templates/dashboard.html"
             </div>
         </div>
 
-        <!-- جدول اینستنس‌ها -->
         <div class="card p-3">
             <h5 class="text-white mb-3">📋 وضعیت اینستنس‌های سایفون (SOCKS5 Outbounds)</h5>
             <div class="table-responsive">
@@ -298,7 +279,6 @@ cat << 'HTMLEOF' > "$INSTALL_DIR/web/templates/dashboard.html"
     </div>
 
     <script>
-        // اتصال به وب‌سوکت لاگ زنده
         let ws;
         function connectLog(service) {
             if (ws) ws.close();
@@ -317,7 +297,6 @@ cat << 'HTMLEOF' > "$INSTALL_DIR/web/templates/dashboard.html"
             connectLog(val);
         }
 
-        // کنترل وضعیت اینستنس
         async function controlInstance(id, action) {
             const fd = new FormData();
             fd.append("action", action);
@@ -327,7 +306,6 @@ cat << 'HTMLEOF' > "$INSTALL_DIR/web/templates/dashboard.html"
             location.reload();
         }
 
-        // تنظیم دامنه
         async function setDomain() {
             const domain = document.getElementById("domainInput").value.trim();
             if (!domain) return alert("لطفا نام دامنه را وارد کنید.");
@@ -349,7 +327,7 @@ cat << 'HTMLEOF' > "$INSTALL_DIR/web/templates/dashboard.html"
 </html>
 HTMLEOF
 
-# 8. اسکریپت پشتیبان تنظیم دامنه و SSL
+# 7. اسکریپت SSL و Nginx
 cat << 'SSLEOF' > /usr/local/bin/psi-panel-ssl
 #!/usr/bin/env bash
 set -e
@@ -387,7 +365,7 @@ systemctl restart nginx
 SSLEOF
 chmod +x /usr/local/bin/psi-panel-ssl
 
-# 9. ایجاد سرویس Systemd برای پنل وب
+# 8. Service Systemd برای پنل وب
 cat << EOF > /etc/systemd/system/psiphon-panel.service
 [Unit]
 Description=Psiphon Multi-Region Web Panel
@@ -405,17 +383,16 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# 10. فعال‌سازی و اجرای سرویس‌ها
+# 9. فعال‌سازی سرویس‌ها
 log "بارگذاری و راه‌اندازی سرویس‌های سیستمی..."
 systemctl daemon-reload
 systemctl enable --now psiphon-panel
 
-# فعال‌سازی چند اینستنس آزمایشی به صورت پیش‌فرض
+# فعال‌سازی اولیه ۳ اینستنس
 for i in 1 2 3; do
     systemctl enable --now psiphon@$i 2>/dev/null || true
 done
 
-# تنظیم فایروال محلی (جلوگیری از درز پورت‌های داخلی به اینترنت)
 ufw allow 80/tcp || true
 ufw allow 443/tcp || true
 ufw allow 22/tcp || true
@@ -424,6 +401,6 @@ log "نصب با موفقیت انجام شد!"
 IP=$(curl -s https://api.ipify.org || echo "SERVER_IP")
 echo -e "${GREEN}==============================================================${NC}"
 echo -e "${GREEN}✓ پنل مدیریت تحت وب با موفقیت فعال شد.${NC}"
-echo -e "${CYAN}آدرس مستقیم فعلی (بدون دامنه): http://${IP}:8000 (یا از طریق معکوس Nginx)${NC}"
-echo -e "${YELLOW}می‌توانید داخل پنل، دامنه خود را متصل کنید تا فوراً گواهی Let's Encrypt صادر شود.${NC}"
+echo -e "${CYAN}آدرس موقت: http://${IP}:8000${NC}"
+echo -e "${YELLOW}از داخل پنل می‌توانید دامنه خود را برای دریافت SSL متصل کنید.${NC}"
 echo -e "${GREEN}==============================================================${NC}"
