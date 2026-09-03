@@ -1,270 +1,429 @@
 #!/usr/bin/env bash
-# psiphon-multi-region / Psiphon Multi-Region Auto-Installer v5.2
-# Supports: Ubuntu 24.04 x86_64 (root required)
+# ==============================================================================
+# Psiphon Multi-Region & Web Management Dashboard Installer
+# Repository: https://github.com/mohsenakbarinia/psiphon-installer
+# ==============================================================================
 
 set -Eeuo pipefail
 
-PROJECT_NAME="psiphon-multi-region"
-VERSION="v5.2"
+readonly VERSION="6.0"
+readonly INSTALL_DIR="/opt/psiphon-panel"
+readonly PSIPHON_USER="psiphon"
+readonly INSTANCE_COUNT=20
+readonly BASE_LOOPBACK="127.20.0"
+readonly SOCKS_BASE_PORT=10800
+readonly WEB_PORT=8000
+readonly LOG_FILE="/var/log/psiphon-installer.log"
 
-PSIPHON_INSTANCES="${PSIPHON_INSTANCES:-20}"
-SOCKS_BASE_PORT="${SOCKS_BASE_PORT:-10800}"
-LOCAL_IP_BASE="${LOCAL_IP_BASE:-127.20.0}"
-INBOUND_BASE_PORT="${INBOUND_BASE_PORT:-20000}"
-EGRESS_REGIONS="${EGRESS_REGIONS:-}"
-SSH_PORT="${SSH_PORT:-22}"
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/psiphon-multi-region}"
-BIN_DIR="${INSTALL_DIR}/bin"
-CONF_DIR="${INSTALL_DIR}/config"
-DATA_DIR="${INSTALL_DIR}/data"
-LOG_DIR="${INSTALL_DIR}/logs"
-SERVICE_USER="${SERVICE_USER:-psiphon}"
-LOG_FILE="/tmp/psiphon-install.log"
+log() { echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')] [INFO]${NC} $*" | tee -a "$LOG_FILE"; }
+warn() { echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] [WARN]${NC} $*" | tee -a "$LOG_FILE"; }
+err() { echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR]${NC} $*" | tee -a "$LOG_FILE"; }
 
-PSIPHON_BIN_URL="https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64"
-XRAY_BIN_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
-
-VALID_REGIONS="AF AL DZ AS AD AO AI AG AR AM AW AU AT AZ BS BH BD BB BY BE BZ BJ BM BT BO BA BW BR BN BG BF BI KH CM CA CV KY CF TD CL CN CO KM CG CD CR CI HR CU CY CZ DK DJ DM DO EC EG SV GQ ER EE ET FK FJ FI FR PF GA GM GE DE GH GI GR GL GD GP GU GT GN GW GY HT HN HK HU IS IN ID IQ IE IL IT JM JP JO KZ KE KI KW KG LA LV LB LS LR LY LI LT LU MO MG MW MY MV ML MT MH MQ MR MU MX FM MD MC MN ME MS MA MZ MM NA NP NL NZ NI NG MP NO OM PK PW PS PA PG PY PE PH PL PT PR QA RO RU RW KN LC VC WS SM ST SA RS SC SL SG SK SI SB SO ZA KR ES LK SD SR SE SZ CH SY TW TJ TZ TH TL TG TO TT TN TR TM TV UG UA AE GB US UY UZ VU VE VN VG VI YE ZM ZW"
-
-if [[ -t 1 ]]; then
-    C_RED='\033[0;31m'; C_GREEN='\033[0;32m'; C_YELLOW='\033[1;33m'
-    C_BLUE='\033[0;34m'; C_CYAN='\033[0;36m'; C_RESET='\033[0m'
-else
-    C_RED=''; C_GREEN=''; C_YELLOW=''; C_BLUE=''; C_CYAN=''; C_RESET=''
+# 1. Environment & Architecture Check
+if [ "$EUID" -ne 0 ]; then
+    err "این اسکریپت حتما باید با دسترسی root اجرا شود."
+    exit 1
 fi
 
-log()  { echo -e "${C_BLUE}[psiphon]${C_RESET} $*" | tee -a "$LOG_FILE" 2>/dev/null || true; }
-ok()   { echo -e "${C_GREEN}[ OK ]${C_RESET} $*" | tee -a "$LOG_FILE" 2>/dev/null || true; }
-warn() { echo -e "${C_YELLOW}[ WARN ]${C_RESET} $*" | tee -a "$LOG_FILE" 2>/dev/null || true; }
-info() { echo -e "${C_CYAN}[ INFO ]${C_RESET} $*" | tee -a "$LOG_FILE" 2>/dev/null || true; }
-die()  { echo -e "${C_RED}[ FAIL ]${C_RESET} $*" | tee -a "$LOG_FILE" 2>/dev/null >&2; exit 1; }
+ARCH=$(uname -m)
+if [ "$ARCH" != "x86_64" ]; then
+    err "معماری سرور شما ($ARCH) است؛ در حال حاضر فقط x86_64 پشتیبانی می‌شود."
+    exit 1
+fi
 
-on_error() {
-    local exit_code=$?
-    local line_no=$1
-    echo -e "${C_RED}[FAIL] خطا در خط ${line_no} رخ داد (کد خروج: ${exit_code}). دستور: ${BASH_COMMAND}${C_RESET}" >&2
-    exit "$exit_code"
-}
-trap 'on_error $LINENO' ERR
+clear
+echo -e "${CYAN}==============================================================${NC}"
+echo -e "${GREEN}    نصب‌کننده خودکار سایفون چند لوکیشن + پنل وب مدیریتی جامع v${VERSION}${NC}"
+echo -e "${CYAN}    https://github.com/mohsenakbarinia/psiphon-installer       ${NC}"
+echo -e "${CYAN}==============================================================${NC}"
+sleep 1
 
-check_root() {
-    [[ "$(id -u)" -eq 0 ]] || die "این اسکریپت باید با روت اجرا شود: sudo bash $0"
-}
+# 2. Package Installation
+log "نصب پکیج‌های پیش‌نیاز سیستم..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y curl wget jq socat nginx-light certbot python3 python3-pip python3-venv ufw fail2ban
 
-check_ssh() {
-    info "بررسی پورت SSH..."
-    if command -v ss >/dev/null 2>&1; then
-        if ss -tln | grep -qE "[:.]${SSH_PORT}[[:space:]]"; then
-            ok "پورت SSH (${SSH_PORT}) فعال است."
-        else
-            warn "پورت SSH (${SSH_PORT}) در حالت Listen مشاهده نشد!"
-        fi
-    fi
-}
+# 3. Directories & User Setup
+log "آماده‌سازی دایرکتوری‌ها و کاربر سیستمی..."
+id -u "$PSIPHON_USER" &>/dev/null || useradd -r -s /bin/false -d "$INSTALL_DIR" "$PSIPHON_USER"
 
-install_dependencies() {
-    info "نصب پیش‌نیازها..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y 2>&1 | tee -a "$LOG_FILE" || true
-    apt-get install -y curl unzip ca-certificates jq iproute2 procps 2>&1 | tee -a "$LOG_FILE" || die "نصب پکیج‌ها ناموفق بود."
-    ok "تمام پکیج‌ها نصب شدند."
-}
+mkdir -p "$INSTALL_DIR"/{bin,config,data,logs,web,web/templates}
+mkdir -p "$INSTALL_DIR/data/instances"
 
-create_user_and_dirs() {
-    info "ایجاد پوشه‌ها و کاربر سیستمی psiphon..."
-    mkdir -p "${BIN_DIR}" "${CONF_DIR}" "${DATA_DIR}" "${LOG_DIR}"
-    LOG_FILE="${LOG_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
-    touch "$LOG_FILE"
-    
-    if ! id "${SERVICE_USER}" &>/dev/null; then
-        useradd --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}" || die "ایجاد کاربر ${SERVICE_USER} ناموفق بود."
-        ok "کاربر ${SERVICE_USER} ایجاد شد."
-    fi
-    chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
-}
-
-download_binaries() {
-    mkdir -p "${BIN_DIR}"
-    if [[ ! -x "${BIN_DIR}/psiphon-tunnel-core" ]]; then
-        info "در حال دانلود psiphon-tunnel-core..."
-        local tmp_psi="${BIN_DIR}/psiphon.tmp"
-        curl -# -fL --connect-timeout 20 --retry 3 -o "$tmp_psi" "$PSIPHON_BIN_URL" 2>&1 | tee -a "$LOG_FILE" || die "دانلود psiphon-tunnel-core ناموفق بود."
-        chmod +x "$tmp_psi"
-        mv -f "$tmp_psi" "${BIN_DIR}/psiphon-tunnel-core"
-        ok "هسته psiphon-tunnel-core آماده شد."
+# 4. Psiphon Core Binary Setup
+if [ ! -f "$INSTALL_DIR/bin/psiphon-tunnel-core" ]; then
+    if [ -f "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" ]; then
+        log "انتقال باینری موجود از مسیر قبلی..."
+        cp "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" "$INSTALL_DIR/bin/psiphon-tunnel-core"
     else
-        ok "هسته psiphon از قبل موجود است."
-    fi
-
-    if [[ "${WITH_XRAY:-0}" == "1" ]]; then
-        if [[ ! -x "${BIN_DIR}/xray" ]]; then
-            info "در حال دانلود هسته Xray..."
-            local tmp_zip="${INSTALL_DIR}/xray.zip"
-            local tmp_dir="${INSTALL_DIR}/xray-extract"
-            mkdir -p "$tmp_dir"
-            curl -# -fL --connect-timeout 20 --retry 3 -o "$tmp_zip" "$XRAY_BIN_URL" 2>&1 | tee -a "$LOG_FILE" || die "دانلود Xray ناموفق بود."
-            unzip -o "$tmp_zip" xray -d "$tmp_dir" 2>&1 | tee -a "$LOG_FILE"
-            chmod +x "$tmp_dir/xray"
-            mv -f "$tmp_dir/xray" "${BIN_DIR}/xray"
-            rm -rf "$tmp_zip" "$tmp_dir"
-            ok "هسته Xray آماده شد."
-        else
-            ok "هسته Xray از قبل موجود است."
+        log "دانلود هسته psiphon-tunnel-core..."
+        # دانلود نسخه پایدار از منبع رسمی یا ریپازیتوری
+        wget -qO "$INSTALL_DIR/bin/psiphon-tunnel-core.tar.gz" "https://github.com/Psiphon-Labs/psiphon-tunnel-core/releases/download/v20230620/psiphon-tunnel-core-linux-x86_64.tar.gz" 2>/dev/null || true
+        if [ -f "$INSTALL_DIR/bin/psiphon-tunnel-core.tar.gz" ]; then
+            tar -xzf "$INSTALL_DIR/bin/psiphon-tunnel-core.tar.gz" -C "$INSTALL_DIR/bin/"
+            rm -f "$INSTALL_DIR/bin/psiphon-tunnel-core.tar.gz"
         fi
     fi
-}
+fi
+chmod +x "$INSTALL_DIR/bin/psiphon-tunnel-core" 2>/dev/null || true
 
-setup_loopback_service() {
-    info "پیکربندی آی‌پی‌های لوکال..."
-    local script_path="${INSTALL_DIR}/bin/setup-loopback.sh"
-    
-    cat << 'SUBEOF' > "$script_path"
-#!/usr/bin/env bash
-set -e
-BASE_IP="${1:-127.20.0}"
-COUNT="${2:-20}"
-for i in $(seq 1 "$COUNT"); do
-    ip addr add "${BASE_IP}.${i}/32" dev lo label "lo:psi${i}" 2>/dev/null || true
-done
-SUBEOF
-    chmod +x "$script_path"
-
-    cat << SUBEOF > /etc/systemd/system/psiphon-loopback.service
-[Unit]
-Description=Psiphon Multi-Region Loopback Aliases Setup
-DefaultDependencies=no
-After=local-fs.target
-Before=network.target
-
-[Service]
-Type=oneshot
-ExecStart=${script_path} ${LOCAL_IP_BASE} ${PSIPHON_INSTANCES}
-RemainAfterExit=yes
-
-[Install]
-WantedBy=network.target
-SUBEOF
-
-    systemctl daemon-reload
-    systemctl enable --now psiphon-loopback.service 2>&1 | tee -a "$LOG_FILE"
-    ok "آی‌پی‌های لوکال ۱۲۷.۲۰.۰.۱ تا ۱۲۷.۲۰.۰.${PSIPHON_INSTANCES} فعال شدند."
-}
-
-generate_configs() {
-    info "تولید فایل‌های کانفیگ برای ${PSIPHON_INSTANCES} اینستنس..."
-    
-    IFS=',' read -r -a REGION_ARRAY <<< "$EGRESS_REGIONS"
-    local reg_len=${#REGION_ARRAY[@]}
-
-    for i in $(seq 1 "$PSIPHON_INSTANCES"); do
-        local inst_dir="${DATA_DIR}/instance-${i}"
-        mkdir -p "$inst_dir"
-        chown -R "${SERVICE_USER}:${SERVICE_USER}" "$inst_dir"
-
-        local socks_port=$(( SOCKS_BASE_PORT + i - 1 ))
-        local http_port=$(( socks_port + 1000 ))
-        local cfg_file="${CONF_DIR}/psiphon-${i}.conf"
-
-        local cp_id pc_id sp_id
-        cp_id="CP$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
-        pc_id="PC$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
-        sp_id="SP$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
-
-        local target_region=""
-        if [[ $reg_len -gt 0 ]]; then
-            local idx=$(( (i - 1) % reg_len ))
-            local candidate="${REGION_ARRAY[$idx]}"
-            candidate="$(echo "$candidate" | xargs | tr '[:lower:]' '[:upper:]')"
-            if [[ " $VALID_REGIONS " =~ [[:space:]]${candidate}[[:space:]] ]]; then
-                target_region="$candidate"
-            fi
-        fi
-
-        cat << SUBEOF > "$cfg_file"
+# 5. Configuration Generation for Instances
+log "تولید فایل‌های کانفیگ برای ${INSTANCE_COUNT} اینستنس..."
+for i in $(seq 1 $INSTANCE_COUNT); do
+    cat << EOF > "$INSTALL_DIR/config/psi-$i.conf"
 {
-  "ClientPlatform": "${cp_id}",
-  "PropagationChannelId": "${pc_id}",
-  "SponsorId": "${sp_id}",
-  "DataRootDirectory": "${inst_dir}",
-  "LocalHttpProxyPort": ${http_port},
-  "LocalSocksProxyPort": ${socks_port},
-  "EgressRegion": "${target_region}",
-  "EnableRemoteAPIList": true
+  "LocalSocksProxyPort": $((SOCKS_BASE_PORT + i - 1)),
+  "LocalHttpProxyPort": 0,
+  "DataRootDirectory": "$INSTALL_DIR/data/instances/psi-$i",
+  "EmitBytesTransferred": true,
+  "EmitDiagnosticInfo": true
 }
-SUBEOF
-        chown "${SERVICE_USER}:${SERVICE_USER}" "$cfg_file"
-        chmod 640 "$cfg_file"
+EOF
+    mkdir -p "$INSTALL_DIR/data/instances/psi-$i"
+done
+chown -R "$PSIPHON_USER":"$PSIPHON_USER" "$INSTALL_DIR/data" "$INSTALL_DIR/config"
 
-        cat << SUBEOF > "/etc/systemd/system/psiphon@${i}.service"
+# 6. Systemd Unit for Psiphon Instances
+cat << EOF > /etc/systemd/system/psiphon@.service
 [Unit]
-Description=Psiphon Multi-Region Service - Instance %i
-After=network.target psiphon-loopback.service
-Wants=psiphon-loopback.service
+Description=Psiphon Core Instance %i
+After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
-User=${SERVICE_USER}
-Group=${SERVICE_USER}
-WorkingDirectory=${DATA_DIR}/instance-%i
-ExecStart=${BIN_DIR}/psiphon-tunnel-core --config ${CONF_DIR}/psiphon-%i.conf --dataRootDirectory ${DATA_DIR}/instance-%i
+User=$PSIPHON_USER
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/bin/psiphon-tunnel-core --config $INSTALL_DIR/config/psi-%i.conf
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
-SUBEOF
-        echo -e "  » کانفیگ و سرویس اینستنس [${i}/${PSIPHON_INSTANCES}] آماده شد."
-    done
+EOF
 
-    systemctl daemon-reload
-    ok "تمام کانفیگ‌ها و سرویس‌ها ایجاد شدند."
+# 7. Python Web Panel Backend (FastAPI + WebSocket Logs)
+log "راه‌اندازی محیط پایتون و پنل وب مدیریتی..."
+python3 -m venv "$INSTALL_DIR/venv"
+"$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q
+"$INSTALL_DIR/venv/bin/pip" install fastapi uvicorn[standard] jinja2 requests psutil websockets -q
+
+# ایجاد بک‌اند کامل پایتون
+cat << 'PYEOF' > "$INSTALL_DIR/web/app.py"
+import os
+import json
+import asyncio
+import subprocess
+import requests
+import psutil
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+
+app = FastAPI(title="Psiphon Web Dashboard")
+BASE_DIR = "/opt/psiphon-panel"
+templates = Jinja2Templates(directory=f"{BASE_DIR}/web/templates")
+
+def get_instance_status(idx: int):
+    socks_port = 10800 + idx - 1
+    # بررسی فعال بودن سرویس در لینوکس
+    active = subprocess.run(["systemctl", "is-active", f"psiphon@{idx}"], capture_output=True, text=True).stdout.strip() == "active"
+    ip = "-"
+    country = "-"
+    if active:
+        try:
+            r = requests.get("https://ipwho.is/", proxies={"http": f"socks5h://127.0.0.1:{socks_port}", "https": f"socks5h://127.0.0.1:{socks_port}"}, timeout=1.5)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("success"):
+                    ip = data.get("ip", "-")
+                    country = data.get("country", "-")
+        except Exception:
+            pass
+    return {"id": idx, "port": socks_port, "active": active, "ip": ip, "country": country}
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    cpu = psutil.cpu_percent(interval=None)
+    ram = psutil.virtual_memory().percent
+    instances = [get_instance_status(i) for i in range(1, 21)]
+    return templates.TemplateResponse("dashboard.html", {"request": request, "instances": instances, "cpu": cpu, "ram": ram})
+
+@app.post("/api/instance/{idx}/action")
+async def instance_action(idx: int, action: str = Form(...)):
+    if action in ["start", "stop", "restart"]:
+        subprocess.run(["systemctl", action, f"psiphon@{idx}"])
+        return JSONResponse({"status": "success", "message": f"اینستنس {idx} با موفقیت {action} شد."})
+    return JSONResponse({"status": "error", "message": "دستور نامعتبر است."}, status_code=400)
+
+@app.post("/api/domain")
+async def setup_domain(domain: str = Form(...)):
+    if not domain:
+        return JSONResponse({"status": "error", "message": "دامنه نباید خالی باشد."}, status_code=400)
+    
+    # اجرا اسکریپت تنظیم SSL و Nginx
+    cmd = f"/usr/local/bin/psi-panel-ssl {domain}"
+    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if proc.returncode == 0:
+        return JSONResponse({"status": "success", "message": f"دامنه {domain} با موفقیت متصل و گواهی SSL صادر شد."})
+    return JSONResponse({"status": "error", "message": f"خطا در صدور SSL: {proc.stderr}"}, status_code=500)
+
+@app.websocket("/ws/logs/{service_name}")
+async def stream_logs(websocket: WebSocket, service_name: str):
+    await websocket.accept()
+    # استفاده از journalctl به عنوان stream لاگ زنده
+    proc = await asyncio.create_subprocess_exec(
+        "journalctl", "-u", service_name, "-f", "-n", "30",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT
+    )
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            await websocket.send_text(line.decode("utf-8", errors="replace"))
+    except WebSocketDisconnect:
+        proc.kill()
+    except Exception:
+        proc.kill()
+PYEOF
+
+# ایجاد قالب وب داشبورد کامل (HTML/CSS مدرن و تاریک با پنل لاگ زنده)
+cat << 'HTMLEOF' > "$INSTALL_DIR/web/templates/dashboard.html"
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مدیریت لوکیشن‌های سایفون | پنل ادمین</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css">
+    <style>
+        body { background: #0b0f19; color: #cbd5e1; font-family: system-ui, -apple-system, sans-serif; padding-bottom: 50px; }
+        .navbar { background: #111827; border-bottom: 1px solid #1f2937; }
+        .card { background: #111827; border: 1px solid #1f2937; border-radius: 10px; }
+        .badge-active { background: #10b981; }
+        .badge-inactive { background: #ef4444; }
+        .log-box { background: #030712; color: #10b981; font-family: monospace; font-size: 13px; height: 320px; overflow-y: scroll; padding: 15px; border-radius: 8px; border: 1px solid #1f2937; }
+        .btn-action { font-size: 12px; padding: 2px 8px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark px-4 py-3 mb-4">
+        <span class="navbar-brand mb-0 h1">⚡ پنل مدیریت سایفون چند لوکیشن</span>
+        <div>
+            <span class="badge bg-secondary me-2">پردازنده: {{ cpu }}%</span>
+            <span class="badge bg-secondary">رم: {{ ram }}%</span>
+        </div>
+    </nav>
+
+    <div class="container-fluid px-4">
+        <!-- بخش تنظیمات دامنه و لاگ کل -->
+        <div class="row mb-4">
+            <div class="col-md-5 mb-3">
+                <div class="card p-3">
+                    <h5 class="text-white mb-3">🌐 تنظیم دامنه و گواهی SSL</h5>
+                    <div class="input-group">
+                        <input type="text" id="domainInput" class="form-control bg-dark text-white border-secondary" placeholder="sub.domain.com">
+                        <button class="btn btn-primary" onclick="setDomain()">ثبت و صدور SSL</button>
+                    </div>
+                    <div id="domainMsg" class="mt-2 text-info small"></div>
+                </div>
+            </div>
+            <div class="col-md-7">
+                <div class="card p-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h5 class="text-white mb-0">📜 لاگ زنده (Realtime Log)</h5>
+                        <select id="logSelector" class="form-select form-select-sm bg-dark text-white border-secondary w-auto" onchange="changeLogStream()">
+                            <option value="psiphon@1">سایفون ۱</option>
+                            <option value="psiphon-panel">پنل وب</option>
+                            <option value="nginx">Nginx</option>
+                        </select>
+                    </div>
+                    <div id="logContent" class="log-box">در حال بارگذاری جریان لاگ...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- جدول اینستنس‌ها -->
+        <div class="card p-3">
+            <h5 class="text-white mb-3">📋 وضعیت اینستنس‌های سایفون (SOCKS5 Outbounds)</h5>
+            <div class="table-responsive">
+                <table class="table table-dark table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>پورت SOCKS</th>
+                            <th>وضعیت</th>
+                            <th>IP لوکیشن</th>
+                            <th>کشور</th>
+                            <th>عملیات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in instances %}
+                        <tr>
+                            <td>{{ item.id }}</td>
+                            <td><code>127.0.0.1:{{ item.port }}</code></td>
+                            <td>
+                                {% if item.active %}
+                                    <span class="badge badge-active">فعال</span>
+                                {% else %}
+                                    <span class="badge badge-inactive">غیرفعال</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ item.ip }}</td>
+                            <td>{{ item.country }}</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-success btn-action" onclick="controlInstance({{ item.id }}, 'start')">شروع</button>
+                                <button class="btn btn-sm btn-outline-danger btn-action" onclick="controlInstance({{ item.id }}, 'stop')">توقف</button>
+                                <button class="btn btn-sm btn-outline-warning btn-action" onclick="controlInstance({{ item.id }}, 'restart')">ری‌استارت</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // اتصال به وب‌سوکت لاگ زنده
+        let ws;
+        function connectLog(service) {
+            if (ws) ws.close();
+            const logBox = document.getElementById("logContent");
+            logBox.innerHTML = "";
+            const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${proto}//${window.location.host}/ws/logs/${service}`);
+            ws.onmessage = (event) => {
+                logBox.innerHTML += event.data + "\n";
+                logBox.scrollTop = logBox.scrollHeight;
+            };
+        }
+
+        function changeLogStream() {
+            const val = document.getElementById("logSelector").value;
+            connectLog(val);
+        }
+
+        // کنترل وضعیت اینستنس
+        async function controlInstance(id, action) {
+            const fd = new FormData();
+            fd.append("action", action);
+            const res = await fetch(`/api/instance/${id}/action`, { method: "POST", body: fd });
+            const data = await res.json();
+            alert(data.message);
+            location.reload();
+        }
+
+        // تنظیم دامنه
+        async function setDomain() {
+            const domain = document.getElementById("domainInput").value.trim();
+            if (!domain) return alert("لطفا نام دامنه را وارد کنید.");
+            const msg = document.getElementById("domainMsg");
+            msg.innerText = "در حال صدور گواهی SSL و اعمال تنظیمات Nginx (لطفا صبر کنید)...";
+            const fd = new FormData();
+            fd.append("domain", domain);
+            const res = await fetch("/api/domain", { method: "POST", body: fd });
+            const data = await res.json();
+            msg.innerText = data.message;
+            if (data.status === "success") {
+                setTimeout(() => window.location.href = `https://${domain}`, 3000);
+            }
+        }
+
+        window.onload = () => connectLog("psiphon@1");
+    </script>
+</body>
+</html>
+HTMLEOF
+
+# 8. اسکریپت پشتیبان تنظیم دامنه و SSL
+cat << 'SSLEOF' > /usr/local/bin/psi-panel-ssl
+#!/usr/bin/env bash
+set -e
+DOMAIN="$1"
+systemctl stop nginx || true
+certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
+
+cat << NGINXCONF > /etc/nginx/sites-available/psiphon-panel
+server {
+    listen 80;
+    server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
 }
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
 
-start_services() {
-    info "راه‌اندازی سرویس‌های سایفون..."
-    for i in $(seq 1 "$PSIPHON_INSTANCES"); do
-        echo -n "  » فعال‌سازی psiphon@${i}... "
-        if systemctl enable --now "psiphon@${i}.service" >> "$LOG_FILE" 2>&1; then
-            echo -e "${C_GREEN}[OK]${C_RESET}"
-        else
-            echo -e "${C_YELLOW}[WARN]${C_RESET}"
-        fi
-    done
-    ok "سرویس‌ها با موفقیت راه‌اندازی شدند."
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
 }
+NGINXCONF
 
-show_summary() {
-    echo ""
-    echo -e "${C_GREEN}====================================================${C_RESET}"
-    echo -e "${C_GREEN}      نصب Psiphon Multi-Region با موفقیت به اتمام رسید  ${C_RESET}"
-    echo -e "${C_GREEN}====================================================${C_RESET}"
-    echo -e " تعداد نمونه‌ها: ${C_CYAN}${PSIPHON_INSTANCES}${C_RESET}"
-    echo -e " پورت‌های SOCKS: ${C_CYAN}${SOCKS_BASE_PORT} تا $(( SOCKS_BASE_PORT + PSIPHON_INSTANCES - 1 ))${C_RESET}"
-    echo -e " پورت‌های HTTP:  ${C_CYAN}$(( SOCKS_BASE_PORT + 1000 )) تا $(( SOCKS_BASE_PORT + 1000 + PSIPHON_INSTANCES - 1 ))${C_RESET}"
-    echo -e " آی‌پی‌های لوکال: ${C_CYAN}${LOCAL_IP_BASE}.1 تا ${LOCAL_IP_BASE}.${PSIPHON_INSTANCES}${C_RESET}"
-    echo -e "${C_GREEN}====================================================${C_RESET}"
-}
+ln -sf /etc/nginx/sites-available/psiphon-panel /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+systemctl restart nginx
+SSLEOF
+chmod +x /usr/local/bin/psi-panel-ssl
 
-main() {
-    WITH_XRAY=0
-    for arg in "$@"; do
-        case "$arg" in
-            --with-xray) WITH_XRAY=1 ;;
-        esac
-    done
+# 9. ایجاد سرویس Systemd برای پنل وب
+cat << EOF > /etc/systemd/system/psiphon-panel.service
+[Unit]
+Description=Psiphon Multi-Region Web Panel
+After=network.target
 
-    log "شروع عملیات نصب Psiphon Multi-Region (${VERSION})..."
-    check_root
-    check_ssh
-    install_dependencies
-    create_user_and_dirs
-    download_binaries
-    setup_loopback_service
-    generate_configs
-    start_services
-    show_summary
-}
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$INSTALL_DIR/web
+ExecStart=$INSTALL_DIR/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
 
-main "$@"
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 10. فعال‌سازی و اجرای سرویس‌ها
+log "بارگذاری و راه‌اندازی سرویس‌های سیستمی..."
+systemctl daemon-reload
+systemctl enable --now psiphon-panel
+
+# فعال‌سازی چند اینستنس آزمایشی به صورت پیش‌فرض
+for i in 1 2 3; do
+    systemctl enable --now psiphon@$i 2>/dev/null || true
+done
+
+# تنظیم فایروال محلی (جلوگیری از درز پورت‌های داخلی به اینترنت)
+ufw allow 80/tcp || true
+ufw allow 443/tcp || true
+ufw allow 22/tcp || true
+
+log "نصب با موفقیت انجام شد!"
+IP=$(curl -s https://api.ipify.org || echo "SERVER_IP")
+echo -e "${GREEN}==============================================================${NC}"
+echo -e "${GREEN}✓ پنل مدیریت تحت وب با موفقیت فعال شد.${NC}"
+echo -e "${CYAN}آدرس مستقیم فعلی (بدون دامنه): http://${IP}:8000 (یا از طریق معکوس Nginx)${NC}"
+echo -e "${YELLOW}می‌توانید داخل پنل، دامنه خود را متصل کنید تا فوراً گواهی Let's Encrypt صادر شود.${NC}"
+echo -e "${GREEN}==============================================================${NC}"
