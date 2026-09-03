@@ -2,12 +2,11 @@
 # ==============================================================================
 # MAXNET5G - Psiphon Multi-Region & Web Management Dashboard
 # Developer: mohsenakbarinia
-# Repository: https://github.com/mohsenakbarinia/psiphon-installer
 # ==============================================================================
 
 set -Eeuo pipefail
 
-readonly VERSION="7.0"
+readonly VERSION="7.1"
 readonly INSTALL_DIR="/opt/psiphon-panel"
 readonly PSIPHON_USER="psiphon"
 readonly INSTANCE_COUNT=20
@@ -15,12 +14,11 @@ readonly SOCKS_BASE_PORT=10800
 readonly LOG_FILE="/var/log/maxnet-installer.log"
 
 # Colors
-RED='\033[0;31m'
 BOLD_RED='\033[1;31m'
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 BOLD_GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
@@ -28,7 +26,6 @@ log() { echo -e "${GREEN}[$(date '+%H:%M:%S')] [INFO]${NC} $*" | tee -a "$LOG_FI
 warn() { echo -e "${YELLOW}[$(date '+%H:%M:%S')] [WARN]${NC} $*" | tee -a "$LOG_FILE"; }
 err() { echo -e "${RED}[$(date '+%H:%M:%S')] [ERROR]${NC} $*" | tee -a "$LOG_FILE"; }
 
-# نمایش بنر اختصاصی با رنگ قرمز
 show_banner() {
     clear
     echo -e "${BOLD_RED}"
@@ -42,12 +39,11 @@ show_banner() {
 EOF
     echo -e "${RED}"
     cat << "EOF"
-         ___  ___      _                               _                 _       _       
-  _ __  / _ \/ _ \    | |_ ___  _ __     / _ \  _ __  | | ___ _   _     | |_ ___| |__    
- | '_ \| | | | (_)____| __/ _ \| '_ \   / /_\/ | '_ \ | |/ _ \ | | |____| __/ _ \ '_ \   
- | |_) | |_| |\__,____| || (_) | | | | / /_\\  | |_) || |  __/ |_| |____| ||  __/ | | |  
- | .__/ \___/          \__\___/|_| |_| \____/  | .__/ |_|\___|\__, |     \__\___|_| |_|  
- |_|                                           |_|            |___/                      
+         _                    _       _ _                                  _       
+ ___ ___| |_ ___ ___ ___ _ _ | |_ ___| |_|___ _ _ _     ___ ___ ___ ___ ___|_|___  
+|   | . |   |_ -| -_|   | | || '_| .'| . | |   | | |___| . |  _| -_|   | . | | .'| 
+|_|_|___|_|_|___|___|_|_|_  ||_,_|__,|___|_|_|_|_  |___|  _|_| |___|_|_|___|_|__,| 
+                        |___|                  |___|   |_|                         
 EOF
     echo -e "                   [ Developer: mohsenakbarinia ]"
     echo -e "                      [ System Version: v${VERSION} ]"
@@ -57,59 +53,43 @@ EOF
 
 check_root() {
     if [ "$EUID" -ne 0 ]; then
-        err "این اسکریپت حتماً باید با دسترسی کاربر root اجرا شود."
+        err "این اسکریپت باید با دسترسی root اجرا شود."
         exit 1
     fi
 }
 
 install_dependencies() {
-    log "بروزرسانی مخازن و نصب پکیج‌های پیش‌نیاز سیستم..."
+    log "در حال نصب پکیج‌های پیش‌نیاز سیستم..."
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
     apt-get install -y curl wget jq socat nginx-light certbot python3 python3-pip python3-venv ufw fail2ban file
 }
 
 setup_directories() {
-    log "ساخت کاربر سیستمی و دایرکتوری‌های پروژه..."
+    log "ساخت کاربر سیستمی و پوشه‌های پروژه..."
     id -u "$PSIPHON_USER" &>/dev/null || useradd -r -s /bin/false -d "$INSTALL_DIR" "$PSIPHON_USER"
-
-    mkdir -p "$INSTALL_DIR"/{bin,config,data,logs,web,web/templates}
-    mkdir -p "$INSTALL_DIR/data/instances"
-}
-
-download_psiphon_binary() {
-    local bin_path="$INSTALL_DIR/bin/psiphon-tunnel-core"
-    local urls=(
-        "https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64"
-        "https://github.com/Psiphon-Labs/psiphon-tunnel-core-binaries/raw/master/linux/psiphon-tunnel-core-x86_64"
-    )
-
-    log "بررسی و راه‌اندازی فایل اجرایی psiphon-tunnel-core..."
-
-    if [ -s "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" ] && file "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" | grep -q "ELF"; then
-        log "باینری از نصب قبلی شناسایی شد."
+    mkdir -p "$INSTALL_DIR"/{/psiphon-multi-region/bin/psiphon-tunnel-core" | grep -q "ELF"; then
         cp -f "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" "$bin_path"
-        chmod +x "$bin_path"
-        return 0
+    else
+        curl -fsSL --retry 3 --connect-timeout Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64"
+
+    log "دانلود باینری رسمی سایفون..."
+    if [ -s "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" ] && file "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" | grep -q "ELF"; then
+        cp -f "/opt/psiphon-multi-region/bin/psiphon-tunnel-core" "$bin_path"
+    else
+        curl -fsSL --retry 3 --connect-timeout 20 "$url" -o "$bin_path"
     fi
 
-    for url in "${urls[@]}"; do
-        log "دانلود مستقیم باینری از: $url"
-        if curl -fsSL --retry 3 --connect-timeout 15 "$url" -o "$bin_path"; then
-            if file "$bin_path" | grep -q "ELF 64-bit"; then
-                chmod +x "$bin_path"
-                log "باینری معتبر با موفقیت دانلود و تنظیم شد."
-                return 0
-            fi
-        fi
-    done
-
-    err "دانلود مستقیم باینری ناموفق بود. لطفاً اتصال اینترنت سرور یا DNS را بررسی کنید."
-    exit 1
+    if ! file "$bin_path" | grep -q "ELF 64-bit"; then
+        err "فایل دانلود شده باینری معتبر نیست!"
+        exit 1
+    fi
+    chmod +x "$bin_path"
+    log "باینری با موفقیت آماده شد."
 }
 
 generate_configs() {
-    log "تولید فایل‌های کانفیگ برای ${INSTANCE_COUNT} اینستنس سایفون..."
+    log "تولید کانفیگ برای ${INSTANCE_COUNT} اینستنس سایفون..."
     for i in $(seq 1 $INSTANCE_COUNT); do
         cat << EOF > "$INSTALL_DIR/config/psi-$i.conf"
 {
@@ -126,30 +106,7 @@ EOF
 }
 
 create_services() {
-    log "تنظیم سرویس‌های systemd برای اینستنس‌ها..."
-    cat DNS را بررسی کنید."
-    exit 1
-}
-
-generate_configs() {
-    log "تولید فایل‌های کانفیگ برای ${INSTANCE_COUNT} اینستنس سایفون..."
-    for i in $(seq 1 $INSTANCE_COUNT); do
-        cat << EOF > "$INSTALL_DIR/config/psi-$i.conf"
-{
-  "LocalSocksProxyPort": $((SOCKS_BASE_PORT + i - 1)),
-  "LocalHttpProxyPort": 0,
-  "DataRootDirectory": "$INSTALL_DIR/data/instances/psi-$i",
-  "EmitBytesTransferred": true,
-  "EmitDiagnosticInfo": true
-}
-EOF
-        mkdir -p "$INSTALL_DIR/data/instances/psi-$i"
-    done
-    chown -R "$PSIPHON_USER":"$PSIPHON_USER" "$INSTALL_DIR"
-}
-
-create_services() {
-    log "تنظیم سرویس‌های systemd برای اینستنس‌ها..."
+    log "ساخت سرویس systemd سایفون..."
     cat << EOF > /etc/systemd/system/psiphon@.service
 [Unit]
 Description=MAXNET Psiphon Instance %i
@@ -171,12 +128,32 @@ EOF
 }
 
 setup_web_panel() {
-    log "ساخت محیط مجازی پایتون و پنل تحت وب FastAPI..."
+    log "راه‌اندازی بک‌اند FastAPI و قالب داشبورد..."
     python3 -m venv "$INSTALL_DIR/venv"
     "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q
     "$INSTALL_DIR/venv/bin/pip" install fastapi uvicorn[standard] jinja2 requests psutil websockets -q
 
-    cat << 'PYEOF' >7.0.0.1:{socks_port}", "https": f"socks5h://127.0.0.1:{socks_port}"}, timeout=1.5)
+    cat << 'PYEOF' > "$INSTALL_DIR/web/app.py"
+import os
+import subprocess
+import requests
+import psutil
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+
+app = FastAPI(title="MAXNET5G Dashboard")
+BASE_DIR = "/opt/psiphon-panel"
+templates = Jinja2Templates(directory=f"{BASE_DIR}/web/templates")
+
+def get_instance_status(idx: int):
+    socks_port = 10800 + idx - 1
+    active = subprocess.run(["systemctl", "is-active", f"psiphon@{idx}"], capture_output=True, text=True).stdout.strip() == "active"
+    ip = "-"
+    country = "-"
+    if active:
+        try:
+            r = requests.get("https://ipwho.is/", proxies={"http": f"socks5h://127.0.0.1:{socks_port}", "https": f"socks5h://127.0.0.1:{socks_port}"}, timeout=1.5)
             if r.status_code == 200:
                 data = r.json()
                 if data.get("success"):
@@ -197,7 +174,7 @@ async def home(request: Request):
 async def instance_action(idx: int, action: str = Form(...)):
     if action in ["start", "stop", "restart"]:
         subprocess.run(["systemctl", action, f"psiphon@{idx}"])
-        return JSONResponse({"status": "success", "message": f"اینستنس {idx} {action} شد."})
+        return JSONResponse({"status": "success", "message": f"اینستنس {idx} با موفقیت {action} شد."})
     return JSONResponse({"status": "error", "message": "دستور نامعتبر است."}, status_code=400)
 
 @app.post("/api/domain")
@@ -206,8 +183,8 @@ async def setup_domain(domain: str = Form(...)):
         return JSONResponse({"status": "error", "message": "دامنه نباید خالی باشد."}, status_code=400)
     proc = subprocess.run(f"/usr/local/bin/maxnet-ssl {domain}", shell=True, capture_output=True, text=True)
     if proc.returncode == 0:
-        return JSONResponse({"status": "success", "message": f"دامنه {domain} با موفقیت متصل شد."})
-    return JSONResponse({"status": "error", "message": f"خطا در صدور SSL: {proc.stderr}"}, status_code=500)
+        return JSONResponse({"status": "success", "message": f"دامنه {domain} متصل شد."})
+    return JSONResponse({"status": "error", "message": f"خطا در SSL: {proc.stderr}"}, status_code=500)
 
 @app.websocket("/ws/logs/{service_name}")
 async def stream_logs(websocket: WebSocket, service_name: str):
@@ -243,7 +220,7 @@ PYEOF
         .card { background: #131b2e; border: 1px solid #1f293d; border-radius: 10px; }
         .badge-active { background: #10b981; }
         .badge-inactive { background: #ef4444; }
-        .log-box { background: #030712; color: #10b981; font-family: monospace; font-size: 13px; height: 300px; overflow-y: scroll; padding: 15px; border-radius: 8px; border: 1px solid #1f2937; }
+        .log-box { background: #030712; color: #10b981; font-family: monospace; font-size: 13px; height: 280px; overflow-y: scroll; padding: 15px; border-radius: 8px; border: 1px solid #1f2937; }
         .btn-action { font-size: 12px; padding: 2px 8px; }
     </style>
 </head>
@@ -270,47 +247,26 @@ PYEOF
             <div class="col-md-7">
                 <div class="card p-3">
                     <div class="d-flex justify-content-between align-items-center mb-2">
-                        <h5 class="text-white mb-0">📜 مشاهده لاگ زنده اینستنس‌ها</h5>
+                        <h5 class="text-white mb-0">📜 لاگ زنده اینستنس‌ها</h5>
                         <select id="logSelector" class="form-select form-select-sm bg-dark text-white border-secondary w-auto" onchange="changeLogStream()">
                             <option value="psiphon@1">سایفون ۱</option>
-                            <option value="psiphon-panel">پنل مدیریت</option>
+                            <option value="psiphon-panel">پنل وب</option>
                             <option value="nginx">Nginx</option>
                         </select>
                     </div>
-                    <div id="logContent" class="log-box">در حال برقراری ارتباط...</div>
+                    <div id="logContent" class="log-box">در حال اتصال...</div>
                 </div>
             </div>
         </div>
         <div class="card p-3">
-            <h5 class="text-white mb-3">📋 مدیریت تونل‌ها و پورت‌های مح-secondary" placeholder="sub.domain.com">
-                        <button class="btn btn-danger" onclick="setDomain()">ثبت دامنه</button>
-                    </div>
-                    <div id="domainMsg" class="mt-2 text-info small"></div>
-                </div>
-            </div>
-            <div class="col-md-7">
-                <div class="card p-3">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <h5 class="text-white mb-0">📜 مشاهده لاگ زنده اینستنس‌ها</h5>
-                        <select id="logSelector" class="form-select form-select-sm bg-dark text-white border-secondary w-auto" onchange="changeLogStream()">
-                            <option value="psiphon@1">سایفون ۱</option>
-                            <option value="psiphon-panel">پنل مدیریت</option>
-                            <option value="nginx">Nginx</option>
-                        </select>
-                    </div>
-                    <div id="logContent" class="log-box">در حال برقراری ارتباط...</div>
-                </div>
-            </div>
-        </div>
-        <div class="card p-3">
-            <h5 class="text-white mb-3">📋 مدیریت تونل‌ها و پورت‌های محلی SOCKS5</h5>
+            <h5 class="text-white mb-3">📋 اینستنس‌های سایفون (SOCKS5 Outbounds)</h5>
             <div class="table-responsive">
                 <table class="table table-dark table-hover align-middle">
                     <thead>
                         <tr>
                             <th>#</th>
-                            <th>آدرس محلی (SOCKS5)</th>
-                            <th>وضعیت تونل</th>
+                            <th>پورت لوکال</th>
+                            <th>وضعیت</th>
                             <th>IP خروجی</th>
                             <th>کشور</th>
                             <th>عملیات</th>
@@ -321,7 +277,38 @@ PYEOF
                         <tr>
                             <td>{{ item.id }}</td>
                             <td><code>127.0.0.1:{{ item.port }}</code></td>
-                            <td><span class="badge {% if item.active %}badge-active{%Box.scrollTop = logBox.scrollHeight;
+                            <td>
+                                {% if item.active %}
+                                    <span class="badge badge-active">فعال</span>
+                                {% else %}
+                                    <span class="badge badge-inactive">غیرفعال</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ item.ip }}</td>
+                            <td>{{ item.country }}</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-success btn-action" onclick="controlInstance({{ item.id }}, 'start')">شروع</button>
+                                <button class="btn btn-sm btn-outline-danger btn-action" onclick="controlInstance({{ item.id }}, 'stop')">توقف</button>
+                                <button class="btn btn-sm btn-outline-warning btn-action" onclick="controlInstance({{ item.id }}, 'restart')">ریست</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <script>
+        let ws;
+        function connectLog(service) {
+            if (ws) ws.close();
+            const logBox = document.getElementById("logContent");
+            logBox.innerHTML = "";
+            const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${proto}//${window.location.host}/ws/logs/${service}`);
+            ws.onmessage = (event) => {
+                logBox.innerHTML += event.data + "\n";
+                logBox.scrollTop = logBox.scrollHeight;
             };
         }
         function changeLogStream() {
@@ -337,9 +324,9 @@ PYEOF
         }
         async function setDomain() {
             const domain = document.getElementById("domainInput").value.trim();
-            if (!domain) return alert("لطفاً نام دامنه را وارد کنید.");
+            if (!domain) return alert("لطفاً دامنه را وارد کنید.");
             const msg = document.getElementById("domainMsg");
-            msg.innerText = "در حال صدور SSL و پیکربندی Nginx...";
+            msg.innerText = "در حال صدور SSL و اعمال روی Nginx...";
             const fd = new FormData();
             fd.append("domain", domain);
             const res = await fetch("/api/domain", { method: "POST", body: fd });
@@ -355,7 +342,6 @@ PYEOF
 </html>
 HTMLEOF
 
-    # اسکریپت صدور SSL
     cat << 'SSLEOF' > /usr/local/bin/maxnet-ssl
 #!/usr/bin/env bash
 set -e
@@ -392,10 +378,9 @@ systemctl restart nginx
 SSLEOF
     chmod +x /usr/local/bin/maxnet-ssl
 
-    # سرویس وب پنل
     cat << EOF > /etc/systemd/system/psiphon-panel.service
 [Unit]
-Description=MAXNET5G Web Management Panel
+Description=MAXNET5G Web Panel
 After=network.target
 
 [Service]
@@ -412,7 +397,7 @@ EOF
 }
 
 start_all_services() {
-    log "راه‌اندازی سرویس‌های اصلی..."
+    log "راه‌اندازی و فعال‌سازی سرویس‌ها..."
     systemctl daemon-reload
     systemctl enable --now psiphon-panel
 
@@ -424,16 +409,15 @@ start_all_services() {
     ufw allow 80/tcp || true
     ufw allow 443/tcp || true
 
-    IP=$(curl -s https://api.ipify.org || echo "IP_سرور")
+    IP=$(curl -s https://api.ipify.org || echo "IP_SERVER")
     echo -e "\n${BOLD_GREEN}========================================================================${NC}"
-    echo -e "${BOLD_GREEN}✓ نصب MAXNET5G با موفقیت به پایان رسید!${NC}"
+    echo -e "${BOLD_GREEN}✓ نصب MAXNET5G با موفقیت به اتمام رسید!${NC}"
     echo -e "${CYAN}آدرس ورود به پنل: http://${IP}:8000${NC}"
-    echo -e "${YELLOW}می‌توانید دامنه دلخواه خود را مستقیماً داخل پنل وب ست کنید.${NC}"
     echo -e "${BOLD_GREEN}========================================================================${NC}\n"
 }
 
 uninstall_all() {
-    warn "در حال حذف کامل سرویس‌ها و فایل‌های MAXNET5G..."
+    warn "در حال پاکسازی کامل فایل‌ها و سرویس‌ها..."
     systemctl stop psiphon-panel || true
     systemctl disable psiphon-panel || true
     for i in $(seq 1 $INSTANCE_COUNT); do
@@ -442,15 +426,14 @@ uninstall_all() {
     done
     rm -rf "$INSTALL_DIR" /etc/systemd/system/psiphon@.service /etc/systemd/system/psiphon-panel.service /usr/local/bin/maxnet-ssl
     systemctl daemon-reload
-    log "حذف با موفقیت انجام شد."
+    log "حذف با موفقیت کامل شد."
 }
 
-# منوی تعاملی
 main_menu() {
     show_banner
     echo -e "${BOLD_GREEN}1)${NC} نصب و راه‌اندازی کامل MAXNET5G (Install)"
-    echo -e "${BOLD_GREEN}2)${NC} راه‌اندازی مجدد سرویس‌ها (Restart All)"
-    echo -e "${BOLD_GREEN}3)${NC} حذف کامل اسکریپت و پنل (Uninstall)"
+    echo -e "${BOLD_GREEN}2)${NC} ری‌استارت سرویس‌ها (Restart All)"
+    echo -e "${BOLD_GREEN}3)${NC} حذف کامل اسکریپت (Uninstall)"
     echo -e "${BOLD_GREEN}0)${NC} خروج (Exit)"
     echo -e "${CYAN}========================================================================${NC}"
     read -rp "لطفاً یک گزینه را انتخاب کنید [0-3]: " choice
@@ -467,10 +450,10 @@ main_menu() {
             start_all_services
             ;;
         2)
-            log "ری‌استارت پنل و سرویس‌ها..."
+            log "ری‌استارت پنل..."
             systemctl restart psiphon-panel
-            for i in $(seq 1 3); do systemctl restart psiphon@$i || true; done
-            log "انجام شد."
+            for i in 1 2 3; do systemctl restart psiphon@$i || true; done
+            log "ری‌استارت انجام شد."
             ;;
         3)
             uninstall_all
