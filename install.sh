@@ -1,4 +1,3 @@
-cat << 'EOF' > install.sh
 #!/usr/bin/env bash
 # psiphon-multi-region / Psiphon Multi-Region Auto-Installer v5.2
 # Supports: Ubuntu 24.04 x86_64 (root required)
@@ -249,6 +248,7 @@ show_summary() {
 }
 
 main() {
+    WITH_XRAY=0
     for arg in "$@"; do
         case "$arg" in
             --with-xray) WITH_XRAY=1 ;;
@@ -268,4 +268,3 @@ main() {
 }
 
 main "$@"
-EOF
