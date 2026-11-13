@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: WG-MULTI | WireGuard Multi-Location Static Egress Manager
-# Edition: Enterprise Production Hardened + Zero-Touch One-Liner Installer (v3.1.0)
+# Edition: Enterprise Production Hardened + Zero-Touch One-Liner Installer (v3.1.2)
 # Target OS: Ubuntu 20.04, 22.04, 24.04, 26.04 LTS
 # ==============================================================================
 
@@ -10,15 +10,14 @@ IFS=$'\n\t'
 umask 0077
 
 # ==============================================================================
-# GITHUB RAW SOURCE URL (برای آپدیت و نصب خودکار در سیستم)
-# نام کاربری و مخزن خود را در خط زیر قرار دهید تا دستور wg-ctl همیشه به آن متصل باشد
+# GITHUB RAW SOURCE URL (متصل به مخزن شما)
 # ==============================================================================
-GITHUB_RAW_URL="${WG_MULTI_REPO_URL:-https://raw.githubusercontent.com/mohsenakbarinia/wg-multi/main/wg-multi-manager.sh}"
+GITHUB_RAW_URL="${WG_MULTI_REPO_URL:-https://raw.githubusercontent.com/mohsenakbarinia/psiphon-installer/main/maxnet55gg.sh}"
 
 # ==============================================================================
 # GLOBAL CONSTANTS & PATHS
 # ==============================================================================
-readonly VERSION="3.1.0-PROD"
+readonly SCRIPT_VERSION="3.1.2-PROD"
 readonly SELF_INSTALLED_PATH="/usr/local/sbin/wg-multi-manager.sh"
 readonly BASE_DIR="/etc/wg-multi"
 readonly CONFIGS_DIR="${BASE_DIR}/configs"
@@ -239,7 +238,6 @@ persist_self_binary() {
         return 0
     fi
 
-    # If executed as a regular file on disk, copy directly
     if [[ -f "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != /dev/fd/* && "${BASH_SOURCE[0]}" != "bash" ]]; then
         if [[ "$(realpath "${BASH_SOURCE[0]}")" != "$SELF_INSTALLED_PATH" ]]; then
             cp -f "${BASH_SOURCE[0]}" "$SELF_INSTALLED_PATH"
@@ -248,9 +246,8 @@ persist_self_binary() {
         return 0
     fi
 
-    # If executed via curl | bash or process substitution, fetch cleanly from GitHub Raw URL
     if [[ ! -f "$SELF_INSTALLED_PATH" ]] || [[ "$ACTION" == "update" ]]; then
-        msg_info "در حال دریافت و ثبت نسخه دائمی اسکریپت در ${SELF_INSTALLED_PATH} ..."
+        msg_info "در حال ثبت نسخه دائمی اسکریپت در ${SELF_INSTALLED_PATH} ..."
         local tmp_self
         tmp_self="$(mktemp /tmp/wg-multi-self.XXXXXX)"
         if curl -fsSL --max-time 20 "$GITHUB_RAW_URL" -o "$tmp_self" && grep -q "WG-MULTI" "$tmp_self"; then
@@ -259,7 +256,7 @@ persist_self_binary() {
             msg_ok "فایل اجرایی اصلی در ${SELF_INSTALLED_PATH} ثبت شد."
         else
             rm -f "$tmp_self"
-            msg_warn "امکان دانلود مجدد از ${GITHUB_RAW_URL} نبود؛ مطمئن شوید آدرس مخزن گیت‌هاب در ابتدای اسکریپت صحیح است."
+            msg_warn "امکان دانلود مجدد از ${GITHUB_RAW_URL} نبود؛ بررسی اتصال اینترنت یا لینک گیت‌هاب."
         fi
     fi
 }
@@ -336,19 +333,22 @@ check_system_compatibility() {
         exit 1
     fi
 
-    # shellcheck disable=SC1091
-    source /etc/os-release
-    if [[ "${ID:-}" == "ubuntu" ]]; then
-        case "${VERSION_ID:-}" in
+    local os_id os_ver_id os_codename
+    os_id="$(awk -F= '/^ID=/ {gsub(/"/,"",$2); print $2}' /etc/os-release)"
+    os_ver_id="$(awk -F= '/^VERSION_ID=/ {gsub(/"/,"",$2); print $2}' /etc/os-release)"
+    os_codename="$(awk -F= '/^VERSION_CODENAME=/ {gsub(/"/,"",$2); print $2}' /etc/os-release)"
+
+    if [[ "$os_id" == "ubuntu" ]]; then
+        case "$os_ver_id" in
             20.04|22.04|24.04|26.04)
-                msg_ok "نسخه سیستم‌عامل تایید شد: Ubuntu ${VERSION_ID} (${VERSION_CODENAME:-})"
+                msg_ok "نسخه سیستم‌عامل تایید شد: Ubuntu ${os_ver_id} (${os_codename})"
                 ;;
             *)
-                msg_warn "نسخه Ubuntu (${VERSION_ID:-}) خارج از لیست LTS استاندارد است، ادامه می‌دهیم."
+                msg_warn "نسخه Ubuntu (${os_ver_id}) خارج از لیست LTS استاندارد است، ادامه می‌دهیم."
                 ;;
         esac
     else
-        msg_warn "سیستم‌عامل '${ID:-unknown}' شناسایی شد (پیشنهادی: Ubuntu LTS)."
+        msg_warn "سیستم‌عامل '${os_id:-unknown}' شناسایی شد (پیشنهادی: Ubuntu LTS)."
     fi
 
     msg_info "معماری پردازنده: $(uname -m) | نسخه کرنل: $(uname -r)"
@@ -1163,7 +1163,6 @@ check_single_country() {
                 public_ip="$(echo "$json_body" | jq -r '.ip // empty')"
                 detected_country="$(echo "$json_body" | jq -r '.country // empty')"
             else
-                # Cloudflare fallback
                 local cf_trace
                 cf_trace="$(curl -sS --max-time 8 --socks5-hostname "127.0.0.1:${port}" --proxy-user "${SOCKS_USER}:${SOCKS_PASS}" "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null || true)"
                 public_ip="$(echo "$cf_trace" | awk -F= '/^ip=/ {print $2}')"
@@ -1843,11 +1842,13 @@ EOF
 }
 
 # ==============================================================================
-# ZERO-TOUCH INTERACTIVE WIZARD (هنگام اجرای تک‌خطی بدون کانفیگ اولیه)
+# ZERO-TOUCH INTERACTIVE WIZARD
 # ==============================================================================
 run_zero_touch_wizard() {
-    # Skip if non-interactive flag passed or not attached to a terminal
-    if [[ "$NON_INTERACTIVE" -eq 1 || "$DRY_RUN" -eq 1 || ! -t 0 ]]; then
+    if [[ "$NON_INTERACTIVE" -eq 1 || "$DRY_RUN" -eq 1 ]]; then
+        return 0
+    fi
+    if [[ ! -r /dev/tty ]]; then
         return 0
     fi
 
@@ -1857,11 +1858,10 @@ run_zero_touch_wizard() {
 
     printf "\n${C_BOLD}${C_CYAN}==================== راه‌انداز خودکار WG-MULTI (Zero-Touch Setup) ====================${C_RESET}\n"
 
-    # Step 1: Ask to paste WireGuard configs directly if none exist
     if [[ "${#existing_confs[@]}" -eq 0 ]]; then
         printf "هیچ فایل کانفیگی در سیستم یافت نشد. می‌توانید همین الان کانفیگ کشورها را وارد کنید:\n"
         while true; do
-            read -r -p "کد کشور را وارد کنید (مثلاً US یا NL) و برای پایان کلید Enter بزنید: " wiz_cc </dev/tty || break
+            read -r -p "کد کشور را وارد کنید (مثلاً US یا NL) و برای اتمام کلید Enter بزنید: " wiz_cc </dev/tty || break
             wiz_cc="$(echo "$wiz_cc" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')"
             [[ -z "$wiz_cc" ]] && break
 
@@ -1869,7 +1869,7 @@ run_zero_touch_wizard() {
                 continue
             fi
 
-            printf "${C_YELLOW}متن کامل کانفیگ WireGuard کشور ${wiz_cc} را Paste کنید و در پایان یک خط خالی بزنید و Ctrl+D را فشار دهید:${C_RESET}\n"
+            printf "${C_YELLOW}متن کامل کانفیگ WireGuard کشور ${wiz_cc} را Paste کنید و در پایان کلید Ctrl+D را فشار دهید:${C_RESET}\n"
             local cfg_body=""
             cfg_body="$(cat </dev/tty)"
             if [[ -n "$cfg_body" ]]; then
@@ -1879,7 +1879,6 @@ run_zero_touch_wizard() {
         done
     fi
 
-    # Step 2: Ask for Turbo Optimization
     if [[ "$ENABLE_TURBO_ON_INSTALL" -eq 0 ]]; then
         read -r -p "آیا بهینه‌سازی شبکه کرنل (BBR + FQ + Socket Buffers) فعال شود؟ [Y/n]: " ans_turbo </dev/tty || ans_turbo="y"
         if [[ ! "$ans_turbo" =~ ^[Nn]$ ]]; then
@@ -1887,7 +1886,6 @@ run_zero_touch_wizard() {
         fi
     fi
 
-    # Step 3: Ask for Optional Telegram Bot
     if [[ -z "$CLI_BOT_TOKEN" ]]; then
         read -r -p "آیا مایل به فعال‌سازی ربات تلگرام مدیریتی هستید؟ [y/N]: " ans_bot </dev/tty || ans_bot="n"
         if [[ "$ans_bot" =~ ^[Yy]$ ]]; then
@@ -2043,7 +2041,7 @@ run_full_install_or_update() {
 
 run_safe_uninstall() {
     msg_warn "حذف ایمن سرویس‌ها و قوانین شبکه WG-MULTI..."
-    if [[ "$ASSUME_YES" -eq 0 && "$DRY_RUN" -eq 0 && -t 0 ]]; then
+    if [[ "$ASSUME_YES" -eq 0 && "$DRY_RUN" -eq 0 && -r /dev/tty ]]; then
         read -r -p "آیا از حذف سرویس‌های WG-MULTI اطمینان دارید؟ [y/N]: " ans </dev/tty
         [[ ! "$ans" =~ ^[Yy]$ ]] && exit 0
     fi
@@ -2118,7 +2116,7 @@ main() {
                 shift 3
                 ;;
             --uninstall) ACTION="uninstall"; shift ;;
-            --version|-v) echo "WG-MULTI version ${VERSION}"; exit 0 ;;
+            --version|-v) echo "WG-MULTI version ${SCRIPT_VERSION}"; exit 0 ;;
             --help|-h)
                 echo "Usage: wg-multi-manager.sh [--install|--update|--add CC|--remove CC|--turbo|--turbo-revert|--net-doctor|--backup|--restore|--uninstall|--dry-run|--non-interactive]"
                 exit 0
